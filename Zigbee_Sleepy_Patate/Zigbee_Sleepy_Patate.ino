@@ -1,33 +1,19 @@
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-/**
- * @brief Zigbee temperature and humidity sensor Zigbee Sleepy End Device.
- *
- * https://tutoduino.fr/tutoriels/esp32c6-zigbee/
- * This code is based on example "Zigbee temperature and humidity sensor Sleepy device" created by Jan Procházka 
- * https://github.com/espressif/arduino-esp32/tree/master/libraries/Zigbee/examples/Zigbee_Temp_Hum_Sensor_Sleepy
- */
 #ifndef ZIGBEE_MODE_ED
 #error "Zigbee end device mode is not selected in Tools->Zigbee mode"
 #endif
 // Comment or uncomment the following line to display or not debug traces in serial monitor of Arduino IDE
-#define DEBUG_TRACE
+//#define DEBUG_TRACE
+
 #include "Zigbee.h"
+#include "DFRobot_CCS811.h"
+#include "DFRobot_AHT20.h"
+
 #define ANALOG_DEVICE_ENDPOINT_NUMBER 1
 
 #include <Wire.h>
 #include "DFRobot_CCS811.h"
 #include "DFRobot_AHT20.h"
+#include <cmath>
 
 uint8_t analogPin = 4;
 uint8_t button = BOOT_PIN;
@@ -47,14 +33,21 @@ ZigbeeAnalog zbAnalogDevice2 = ZigbeeAnalog(ANALOG_DEVICE_ENDPOINT_NUMBER + 1);
 ZigbeeAnalog zbAnalogDevice3 = ZigbeeAnalog(ANALOG_DEVICE_ENDPOINT_NUMBER + 2);
 ZigbeeAnalog zbAnalogDevice4 = ZigbeeAnalog(ANALOG_DEVICE_ENDPOINT_NUMBER + 3);
 ZigbeeAnalog zbAnalogDevice5 = ZigbeeAnalog(ANALOG_DEVICE_ENDPOINT_NUMBER + 4);
+ZigbeeAnalog BatteryPercent = ZigbeeAnalog(ANALOG_DEVICE_ENDPOINT_NUMBER + 5);
 
 void setup_HW(){
   // Init button switch
   pinMode(button, INPUT_PULLUP);
 
+  // Pin led
+  pinMode(LED_BUILTIN, OUTPUT);
 
   // Init analog in
   pinMode(analogPin, INPUT);
+
+  // Analog in battery
+  pinMode(0,INPUT);
+
   // Set analog resolution to 10 bits
   analogReadResolution(10);
 
@@ -69,34 +62,39 @@ void setup_ZB(){
   // Set up analog input 1
   zbAnalogDevice1.addAnalogInput();
   zbAnalogDevice1.setAnalogInputApplication(ESP_ZB_ZCL_AI_TEMPERATURE_OTHER);
-  zbAnalogDevice1.setAnalogInputDescription("Valeur 1: Temperature");
+  zbAnalogDevice1.setAnalogInputDescription("Temperature C");
   zbAnalogDevice1.setAnalogInputResolution(0.01);
   zbAnalogDevice1.setAnalogInputMinMax(-100,100);
    // Set up analog input 2
   zbAnalogDevice2.addAnalogInput();
   zbAnalogDevice2.setAnalogInputApplication(ESP_ZB_ZCL_AI_HUMIDITY_OTHER);
-  zbAnalogDevice2.setAnalogInputDescription("Valeur 2: Humidity");
+  zbAnalogDevice2.setAnalogInputDescription("Humidity %");
   zbAnalogDevice2.setAnalogInputResolution(0.01);
   zbAnalogDevice2.setAnalogInputMinMax(0,100);
   // Set up analog input 3
   zbAnalogDevice3.addAnalogInput();
   zbAnalogDevice3.setAnalogInputApplication(ESP_ZB_ZCL_AI_PPM_OTHER);
-  zbAnalogDevice3.setAnalogInputDescription("Valeur 3: CO2 PPM");
+  zbAnalogDevice3.setAnalogInputDescription("CO2 PPM");
   zbAnalogDevice3.setAnalogInputResolution(0.01);
   zbAnalogDevice3.setAnalogInputMinMax(0,1000000);
    // Set up analog input 4
   zbAnalogDevice4.addAnalogInput();
   zbAnalogDevice4.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
-  zbAnalogDevice4.setAnalogInputDescription("Valeur 4: VOC PPB");
+  zbAnalogDevice4.setAnalogInputDescription("VOC PPB");
   zbAnalogDevice4.setAnalogInputResolution(0.01);
   zbAnalogDevice4.setAnalogInputMinMax(0,1000000);
   // Set up analog input 5
   zbAnalogDevice5.addAnalogInput();
   zbAnalogDevice5.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
-  zbAnalogDevice5.setAnalogInputDescription("Valeur 5: Luminosité lux");
+  zbAnalogDevice5.setAnalogInputDescription("Luminosité %");
   zbAnalogDevice5.setAnalogInputResolution(0.01);
-  zbAnalogDevice5.setAnalogInputMinMax(0,100000);
-  
+  zbAnalogDevice5.setAnalogInputMinMax(0,100);
+  // Set up battery EP
+  BatteryPercent.addAnalogInput();
+  BatteryPercent.setAnalogInputApplication(ESP_ZB_ZCL_AI_COUNT_UNITLESS_COUNT);
+  BatteryPercent.setAnalogInputDescription("Niveau de batterie %");
+  BatteryPercent.setAnalogInputResolution(0.01);
+  BatteryPercent.setAnalogInputMinMax(0,100);
 
   // Add endpoints to Zigbee Core
   Zigbee.addEndpoint(&zbAnalogDevice1);
@@ -104,44 +102,137 @@ void setup_ZB(){
   Zigbee.addEndpoint(&zbAnalogDevice3);
   Zigbee.addEndpoint(&zbAnalogDevice4);
   Zigbee.addEndpoint(&zbAnalogDevice5);
+  Zigbee.addEndpoint(&BatteryPercent);
 }
 
 void start_ZB(){
-  
+  #ifdef DEBUG_TRACE
   Serial.println("Starting Zigbee...");
-
+  #endif
   // When all EPs are registered, start Zigbee in End Device mode
   if (!Zigbee.begin(ZIGBEE_END_DEVICE)) {
+    #ifdef DEBUG_TRACE
     Serial.println("Zigbee failed to start!");
     Serial.println("Rebooting...");
+    #endif
     ESP.restart();
   } else {
+    #ifdef DEBUG_TRACE
     Serial.println("Zigbee started successfully!");
+    #endif
   }
+  #ifdef DEBUG_TRACE
   Serial.println("Connecting to network");
+  #endif
   while (!Zigbee.connected()) {
+    #ifdef DEBUG_TRACE
     Serial.print(".");
+    #endif
     delay(100);
   }
+  #ifdef DEBUG_TRACE
   Serial.println("Connected");
+  #endif
 }
 
 void start_sensors(){
   // Sensor init
-  Serial.println("not Starting sensors");
-  
+  #ifdef DEBUG_TRACE
+  Serial.println("Starting sensors");
+  Serial.println("Starting aht20");
+  #endif
+
+  uint8_t status;
+  while((status = aht20.begin()) != 0){
+    #ifdef DEBUG_TRACE
+    Serial.print("AHT20 sensor initialization failed. error status : ");
+    Serial.println(status);
+    #endif
+    delay(1000);
+  }
+  #ifdef DEBUG_TRACE
+  Serial.println("Starting CCS811");
+  #endif
+
+  while(CCS811.begin() != 0){
+      #ifdef DEBUG_TRACE
+      Serial.println("failed to init chip, please check if the chip connection is fine ");
+      #endif
+      delay(1000);
+  }
+  #ifdef DEBUG_TRACE
+  Serial.print("current configured parameter code is ");
+  Serial.println(CCS811.getMeasurementMode(),BIN);
+  #endif
+  CCS811.setMeasurementMode(CCS811.eCycle_250ms);
+  CCS811.setInTempHum(/*temperature=*/25,/*humidity=*/50);
 }
 
 void update_AHT_values(){
   
-  zbAnalogDevice1.setAnalogInput(temp++);
-  zbAnalogDevice2.setAnalogInput(hum++);
+  //aht20
+    bool aht20ok = false;
+    for(int i = 0; i < 50; i++){
+      if(aht20.startMeasurementReady()){
+        aht20ok = true;
+        break;
+      }
+      delay(100);
+    }
+    if(aht20ok){
+      temp = aht20.getTemperature_C();
+      hum = aht20.getHumidity_RH();
+        // update ZB Analog value
+      zbAnalogDevice1.setAnalogInput(temp);
+      zbAnalogDevice2.setAnalogInput(hum);
+        // debug print
+      #ifdef DEBUG_TRACE
+      Serial.print("temp: ");
+      Serial.print(temp);
+      Serial.print("  hum: ");
+      Serial.println(hum);
+      #endif
+    }
+    else{
+      #ifdef DEBUG_TRACE
+      Serial.println("ERROR: AHT20 took too long to respond (>5s)");
+      #endif
+    }
 }
 
 void update_CCS_values(){
   
-    zbAnalogDevice3.setAnalogInput(temp++);
-    zbAnalogDevice4.setAnalogInput(temp++);
+    //CCS811
+    
+    CCS811.setInTempHum(temp, hum); // Update calibration Temperature and Humidity for more accurate measurements
+
+    bool CCS811ok = false;
+    for(int i = 0; i < 50; i++){
+      if(CCS811.checkDataReady()){
+        CCS811ok = true;
+        break;
+      }
+      delay(100);
+    }
+
+    if(CCS811ok){
+      uint16_t co2ppm = CCS811.getCO2PPM();
+      uint16_t VOCppb = CCS811.getTVOCPPB();
+
+      zbAnalogDevice3.setAnalogInput(co2ppm);
+      zbAnalogDevice4.setAnalogInput(VOCppb);
+      #ifdef DEBUG_TRACE
+      Serial.print("co2ppm: ");
+      Serial.print(co2ppm);
+      Serial.print("  VOCppb: ");
+      Serial.println(VOCppb);
+      #endif
+    }
+    else{
+      #ifdef DEBUG_TRACE
+      Serial.println("ERROR: CCS811 took too long to respond (>5s)");
+      #endif
+    }
 }
 
 void update_lumi_values(){
@@ -155,25 +246,43 @@ void update_lumi_values(){
 
     float lumimoy = lumi/10;  // tension en mV
     float lumipercent = lumimoy/33;  //pourcentage de full range
+    #ifdef DEBUG_TRACE
     Serial.print("lumipercent: ");
     Serial.print(lumipercent);
     Serial.print("lumimoy: ");
     Serial.println(lumimoy);
-    
+    #endif
+
     zbAnalogDevice5.setAnalogInput(lumipercent);
 }
 
+void update_battery(){
+  int analogVolts = analogReadMilliVolts(0)*2;
+
+  //estimation courbe de charge
+  int percent = 123.0 - (123.0/(pow(1+pow(analogVolts/3700.0,80),0.165)));
+
+  #ifdef DEBUG_TRACE
+  Serial.print("Voltage Batt: ");
+  Serial.println(analogVolts);
+  Serial.print("Percent Batt: ");
+  Serial.println(percent);
+  #endif
+
+  BatteryPercent.setAnalogInput(percent);
+}
 void report_values(){
   // Report ZB Analog values
   #ifdef DEBUG_TRACE
-  Serial.printf("Report values");
+  Serial.println("Report values");
   #endif
-  zbAnalogDevice1.setAnalogInput(111);
+  
   zbAnalogDevice1.reportAnalogInput();
   zbAnalogDevice2.reportAnalogInput();
   zbAnalogDevice3.reportAnalogInput();
   zbAnalogDevice4.reportAnalogInput();
   zbAnalogDevice5.reportAnalogInput();
+  BatteryPercent.reportAnalogInput();
 }
 
 // Get data from sensor and go to deep sleep mode
@@ -186,13 +295,8 @@ void measureAndSleep() {
   update_AHT_values(); // temperature + humidity
   update_CCS_values(); // eCO2 + VOC
   update_lumi_values(); // luminosity
-
-  zbAnalogDevice1.reportAnalogInput();
-  zbAnalogDevice2.reportAnalogInput();
-  zbAnalogDevice3.reportAnalogInput();
-  zbAnalogDevice4.reportAnalogInput();
-  zbAnalogDevice5.reportAnalogInput();
-  //report_values(); // report values over ZB
+  update_battery();
+  report_values(); // report values over ZB
   // Turn on the builtin LED for a very short time
   flashLED(1);
   // Add small delay to allow the data to be sent before going to sleep
@@ -219,11 +323,11 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println();
-  Serial.println("Starting Sleepy Patate!");
+  Serial.println("Starting Capteur Stockage Tubercules!");
 #endif
   
   
-  pinMode(LED_BUILTIN, OUTPUT);
+  
   digitalWrite(LED_BUILTIN, HIGH);
 
   // Internal LED flash twice to indicate device start
